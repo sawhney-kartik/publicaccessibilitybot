@@ -3,18 +3,15 @@ import requests
 import openai
 from bs4 import BeautifulSoup
 import os
-from dotenv import load_dotenv
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key'
 
-load_dotenv()
-
 openai.api_type = "azure"
 openai.api_version = "2023-06-01-preview" 
 openai.api_base = "https://a11ygenerative.openai.azure.com/"
-openai.api_key = os.getenv("aoai_key")
-subscription_key = os.getenv("bing_key")
+openai.api_key = os.getenv("aoaikey")
+subscription_key = os.getenv("bingkey")
 
 # List of websites to search in
 websites = [
