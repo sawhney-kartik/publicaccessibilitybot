@@ -1,48 +1,76 @@
-from flask import Flask, request, jsonify, render_template, session
+from flask import Flask, request, jsonify, render_template, session, redirect
+from azure.cosmos import CosmosClient
 import requests
 import openai
 from bs4 import BeautifulSoup
 import os
+# from dotenv import load_dotenv
+import random
+import string
+import time
+
+# load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key'
 
 openai.api_type = "azure"
-openai.api_version = "2023-06-01-preview" 
+openai.api_version = "2023-06-01-preview"
 openai.api_base = "https://a11ygenerative.openai.azure.com/"
 openai.api_key = os.getenv("aoaikey")
 subscription_key = os.getenv("bingkey")
+
+cosmos_uri = os.getenv("dburi")
+cosmos_key = os.getenv("dbkey")
+client = CosmosClient(cosmos_uri, cosmos_key)
+database = client.get_database_client('publicaccessibilitybot')
+container = database.get_container_client('publicaccessibilitybot')
 
 # List of websites to search in
 websites = [
     "microsoft.com"
 ]
 
+def generate_random_id(length=8):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
+
+
 @app.route('/')
 def home():
     return render_template('index.html')
+
 
 @app.route('/ask', methods=['POST'])
 def ask():
     message = request.json['message']
     session['messages'].append({"role": "user", "content": message})
 
+    start_time = time.time()
+
     # Query the LLM for relevant search terms
+    llm_start_time = time.time()
     search_terms_response = openai.ChatCompletion.create(
         engine="a11yultimate",
-        messages=session['messages'] + [{"role": "system", "content": "What would be the relevant search terms for the web search based on the user's question? Please provide only the search terms as they will be used programmatically."}]
+        messages=session['messages'] + [{"role": "system", "content": "What would be the relevant search terms for the web search based on the user's question? Please provide only the search terms as they will be used programmatically. Only if the user does not ask any question about a factual thing, but instead asks a question about you as an assistant should you return the word noQuery followed by the actual answer as the answer, and make sure you don't return anything else. Again remember, the first word where an external search does not make sense should be noQuery."}]
     )
 
+    print(f"LLM Search Terms Time Taken: {time.time() - llm_start_time} seconds")
     search_terms = search_terms_response['choices'][0]['message']['content']
+
+    if "noQuery" in search_terms:
+        return jsonify({"role": "assistant", "content": search_terms.split("noQuery ")[1]})
 
     headers = {"Ocp-Apim-Subscription-Key" : subscription_key}
     params  = {"q": search_terms, "textDecorations": True, "textFormat": "HTML"}
+    bing_search_start_time = time.time()
     response = requests.get("https://api.bing.microsoft.com/v7.0/search", headers=headers, params=params)
     response.raise_for_status()
     search_results = response.json()
+    print(f"Bing Search Time Taken: {time.time() - bing_search_start_time} seconds")
 
     search_content = []
     used_urls = []
+    web_scraping_start_time = time.time()
     for result in search_results["webPages"]["value"]:
         if any(website in result["url"] for website in websites):
             response = requests.get(result["url"])
@@ -55,19 +83,56 @@ def ask():
                 break
 
     search_content = ' '.join(search_content)
+    print(len(search_content))
+    print(search_content)
+    print(f"Web Scraping Time Taken: {time.time() - web_scraping_start_time} seconds")
 
     # Ask the LLM the user's question with the obtained search results
+    llm_question_start_time = time.time()
     llm_response = openai.ChatCompletion.create(
         engine="a11yultimate",
         messages=session['messages'] + [
-            {"role": "system", "content": "Here's some additional information that can help you provide an up-to-date answer. The following URLs were used for this information and you absolutely must cite these URLs in the answer you provide the user: "     + ', '.join(used_urls)},
-            {"role": "assistant", "content": search_content}
+            {"role": "system", "content": "Here's some additional information that can help you provide an up-to-date answer. The following URLs were used for this information and you absolutely must cite these URLs in the answer you provide the user. You should only use information from these URLs and nothing else whatsoever. Do not invent URLs."     + ', '.join(used_urls)},
+            {"role": "assistant", "content": search_content},
+            {"role": "system", "content": "Your answer should be HTML code snippet with paragraph and lists within p and ul or ol tags. The source links should also be proper hyperlinks with the href attribute pointing to those links while the link text reflecting their titles or similar text defining the pages. *Do not* give a plain text answer, make sure you provide an HTML code snippet as an answer."}
         ]
     )
 
+    print(f"LLM Question Time Taken: {time.time() - llm_question_start_time} seconds")
+
     answer = llm_response['choices'][0]['message']['content']
+
+    # Save the answer, search terms, vote, and comment
+    item_id = generate_random_id()
+    item_data = {
+        'id': item_id,
+        'question': message,
+        'answer': answer,
+        'search_terms': search_terms,
+        'vote': 'none',
+        'comment': ''
+    }
+    container.upsert_item(item_data)
+
     session['messages'].append({"role": "assistant", "content": answer})
-    return jsonify({"role": "assistant", "content": answer})
+    print(f"Total Time Taken: {time.time() - start_time} seconds")
+    return jsonify({"role": "assistant", "content": answer, "answer_id": item_id})
+
+@app.route('/vote', methods=['POST'])
+def vote():
+    vote_data = request.get_json() # Use get_json to properly parse the JSON data
+    answer_id = vote_data['answer_id']
+    vote_type = vote_data['vote_type']
+    comment = vote_data.get('comment', '')
+
+    # Retrieve the item from Cosmos DB and update it
+    item = container.read_item(item=answer_id, partition_key=answer_id)
+    item['vote'] = vote_type
+    item['comment'] = comment
+    container.replace_item(item=item['id'], body=item)
+
+    return jsonify({"status": "success"})
+
 
 @app.before_request
 def before_request():
@@ -76,6 +141,23 @@ def before_request():
             {"role": "system", "content": "Hi, I am the Microsoft accessibility bot that will provide you information about accessibility features in Microsoft products."},
         ]
 
+
+@app.route('/admin')
+def admin_portal():
+    # Query all the items from the database
+    items = list(container.query_items(
+        query="SELECT * FROM c",
+        enable_cross_partition_query=True
+    ))
+
+    return render_template('admin.html', items=items)
+
+@app.route('/delete_all', methods=['POST'])
+def delete_all():
+    for item in container.query_items(query="SELECT * FROM c", enable_cross_partition_query=True):
+        container.delete_item(item=item['id'], partition_key=item['id'])
+    return redirect('/admin')
+
+
 if __name__ == '__main__':
     app.run(port=5000)
-
