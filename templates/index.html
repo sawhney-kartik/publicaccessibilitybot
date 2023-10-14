@@ -27,6 +27,7 @@
     </div>
     <form id="chat-form" method="POST">
         <input type="text" id="message-input" placeholder="Your message here...">
+        <input type="hidden" id="guid-input" name="guid" value="testGuid">
         <input type="submit" value="Send">
     </form>
 
@@ -35,6 +36,8 @@
             e.preventDefault();
 
             var message = $('#message-input').val();
+            var guid = $('#guid-input').val();
+
             $('#message-input').val('');
 
             $('#chat').append('<p><strong>You:</strong> ' + message + '</p>');
@@ -44,7 +47,7 @@
                 url: '/ask',
                 method: 'POST',
                 contentType: 'application/json',
-                data: JSON.stringify({'message': message}),
+                data: JSON.stringify({'message': message, 'guid': guid}),
             }).done(function(data) {
                 $('#waiting').remove();
                 var answer_html = '<p><strong>Assistant:</strong> ' + data.content + '<br><button onclick="vote(\'' + data.answer_id + '\', \'upvote\')">Upvote</button> <button onclick="vote(\'' + data.answer_id + '\', \'downvote\')">Downvote</button></p>';

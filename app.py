@@ -43,21 +43,33 @@ def home():
 @app.route('/ask', methods=['POST'])
 def ask():
     message = request.json['message']
+
+    guid = "unknown"
+    if "guid" in request.json:
+        guid = request.json['guid']
+
     session['messages'].append({"role": "user", "content": message})
 
-    start_time = time.time()
-
-    # Query the LLM for relevant search terms
-    llm_start_time = time.time()
     search_terms_response = openai.ChatCompletion.create(
         engine="a11yultimate",
         messages=session['messages'] + [{"role": "system", "content": "What would be the relevant search terms for the web search based on the user's question? Please provide only the search terms as they will be used programmatically. Only if the user does not ask any question about a factual thing, but instead asks a question about you as an assistant should you return the word noQuery followed by the actual answer as the answer, and make sure you don't return anything else. Again remember, the first word where an external search does not make sense should be noQuery."}]
     )
 
-    print(f"LLM Search Terms Time Taken: {time.time() - llm_start_time} seconds")
     search_terms = search_terms_response['choices'][0]['message']['content']
 
     if "noQuery" in search_terms:
+        item_id = generate_random_id()
+        item_data = {
+            'id': item_id,
+            'question': message,
+            'answer': search_terms.split("noQuery ")[1],
+            'search_terms': "no search",
+            'vote': 'none',
+            'comment': '',
+            'guid': guid
+        }
+        container.upsert_item(item_data)
+
         return jsonify({"role": "assistant", "content": search_terms.split("noQuery ")[1]})
 
     headers = {"Ocp-Apim-Subscription-Key" : subscription_key}
@@ -66,11 +78,9 @@ def ask():
     response = requests.get("https://api.bing.microsoft.com/v7.0/search", headers=headers, params=params)
     response.raise_for_status()
     search_results = response.json()
-    print(f"Bing Search Time Taken: {time.time() - bing_search_start_time} seconds")
 
     search_content = []
     used_urls = []
-    web_scraping_start_time = time.time()
     for result in search_results["webPages"]["value"]:
         if any(website in result["url"] for website in websites):
             response = requests.get(result["url"])
@@ -83,12 +93,8 @@ def ask():
                 break
 
     search_content = ' '.join(search_content)
-    print(len(search_content))
-    print(search_content)
-    print(f"Web Scraping Time Taken: {time.time() - web_scraping_start_time} seconds")
 
     # Ask the LLM the user's question with the obtained search results
-    llm_question_start_time = time.time()
     llm_response = openai.ChatCompletion.create(
         engine="a11yultimate",
         messages=session['messages'] + [
@@ -97,8 +103,6 @@ def ask():
             {"role": "system", "content": "Your answer should be HTML code snippet with paragraph and lists within p and ul or ol tags. The source links should also be proper hyperlinks with the href attribute pointing to those links while the link text reflecting their titles or similar text defining the pages. *Do not* give a plain text answer, make sure you provide an HTML code snippet as an answer."}
         ]
     )
-
-    print(f"LLM Question Time Taken: {time.time() - llm_question_start_time} seconds")
 
     answer = llm_response['choices'][0]['message']['content']
 
@@ -110,12 +114,12 @@ def ask():
         'answer': answer,
         'search_terms': search_terms,
         'vote': 'none',
-        'comment': ''
+        'comment': '',
+        'guid': guid
     }
     container.upsert_item(item_data)
 
     session['messages'].append({"role": "assistant", "content": answer})
-    print(f"Total Time Taken: {time.time() - start_time} seconds")
     return jsonify({"role": "assistant", "content": answer, "answer_id": item_id})
 
 @app.route('/vote', methods=['POST'])

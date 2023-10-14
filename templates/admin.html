@@ -23,6 +23,7 @@
     <h1>Admin Portal</h1>
     <table border="1">
         <tr>
+            <th>Session ID</th>
             <th>Question</th>
             <th>Answer</th>
             <th>Search Terms</th>
@@ -31,6 +32,7 @@
         </tr>
         {% for item in items %}
         <tr>
+            <td>{{ item.guid}}</td>
             <td>{{ item.question}}</td>
             <td id="answer-{{ item.id }}">
                 <button class="toggle-answer" onclick="toggleAnswer('{{ item.id }}')">Show Answer</button>
